@@ -1,0 +1,37 @@
+name: Tests
+on: [push, pull_request]
+
+jobs:
+  Windows:
+    name: windows-${{ matrix.os-version }}-${{ matrix.build-config }}-${{ matrix.build-arch }}
+    runs-on: windows-${{ matrix.os-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os-version: [2022]
+        build-config: [debug,relwithdebinfo,release]
+        build-arch: [x64]
+
+    steps:
+    - name: Versions
+      shell: bash
+      run: |
+        cmake --version
+        git --version
+
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Configure
+      shell: bash
+      run: |
+        mkdir build
+        cd build
+        cmake -A${{ matrix.build-arch }} ..
+
+    - name: Build
+      shell: bash
+      run: |
+        cd build
+        cmake --build . --config ${{ matrix.build-config }}
