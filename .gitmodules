@@ -1,0 +1,6 @@
+[submodule "externals/cage"]
+	path = externals/cage
+	url = https://github.com/ucpu/cage.git
+[submodule "externals/uwapi"]
+	path = externals/uwapi
+	url = https://github.com/unnatural-worlds/uwapi.git
