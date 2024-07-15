@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using CommandLine;
 
@@ -37,11 +38,20 @@ namespace Unnatural
 
     class MatchAdmin
     {
-        readonly System.Diagnostics.Stopwatch stopWatch = new System.Diagnostics.Stopwatch();
+        static readonly uint Invalid = 4294967295;
+        readonly Stopwatch stopWatch = new Stopwatch();
         readonly Options options;
         readonly Random random = new Random();
         uint startCountdown = 0;
+        long lastCameraUpdate = 0;
+        uint? lastShotPosition = null;
+        int lastPlayerIndex = 0;
         bool initialized = false;
+
+        void Shooting(object sender, Interop.UwShootingData[] data)
+        {
+            lastShotPosition = data[0].shooter.position;
+        }
 
         string PickMap()
         {
@@ -61,12 +71,64 @@ namespace Unnatural
 
         bool CheckPlayers()
         {
-            // todo check player types
-            // todo check player ids
-            // todo check players count
-            // todo make match observer an admin too
-            // todo check players loaded status
-            return true;
+            bool result = true;
+            var forces = new HashSet<uint>();
+            ulong myUserId = Interop.uwGetUserId();
+
+            var players = World.Entities().Values.Where(x => Entity.Has(x, "Player")).ToArray();
+            foreach (var player in players)
+            {
+                uint id = player.Id;
+                Interop.UwPlayerComponent p = player.Player;
+
+                // check player type
+                if (p.steamUserId != myUserId && p.force != Invalid)
+                {
+                    var expected = options.Uwapi ? Interop.UwPlayerConnectionClassEnum.UwApi : Interop.UwPlayerConnectionClassEnum.Computer;
+                    if (p.playerConnectionClass != expected)
+                    {
+                        Interop.uwAdminKickPlayer(id);
+                        result = false;
+                        continue;
+                    }
+                }
+
+                // check player id
+                if (p.steamUserId != myUserId && options.Players.Count() > 0)
+                {
+                    if (!options.Players.Contains(id))
+                    {
+                        Interop.uwAdminKickPlayer(id);
+                        result = false;
+                        continue;
+                    }
+                }
+
+                // check one player per force
+                if (p.force != Invalid)
+                {
+                    if (forces.Contains(p.force))
+                        result = false;
+                    else
+                        forces.Add(p.force);
+                }
+
+                // check loaded
+                if ((p.state & Interop.UwPlayerStateFlags.Loaded) == 0)
+                    result = false;
+
+                // check match observer
+                if (p.steamUserId == myUserId && p.playerConnectionClass == Interop.UwPlayerConnectionClassEnum.Computer && (p.state & Interop.UwPlayerStateFlags.Admin) == 0)
+                    Interop.uwAdminPlayerSetAdmin(id, true);
+            }
+
+            // check forces count
+            if (forces.Count() > Map.MaxPlayers())
+                result = false;
+
+            // check all players present
+
+            return result;
         }
 
         void UpdateSession()
@@ -86,18 +148,39 @@ namespace Unnatural
             }
             if (CheckPlayers())
             {
-                if (startCountdown++ > 100)
+                if (startCountdown++ > Interop.UW_GameTicksPerSecond)
                     Interop.uwAdminStartGame();
             }
             else
                 startCountdown = 0;
         }
 
+        void SuggestCamera()
+        {
+            if (lastShotPosition != null)
+            {
+                Interop.uwSendCameraSuggestion(lastShotPosition.Value);
+                lastShotPosition = null;
+            }
+            else
+            {
+                var players = World.Entities().Values.Where(x => Entity.Has(x, "ForceDetails")).ToArray();
+                Debug.Assert(players.Count() > 0);
+                lastPlayerIndex = (lastPlayerIndex + 1) % players.Count();
+                Interop.uwSendCameraSuggestion(players[lastPlayerIndex].ForceDetails.startingPosition);
+            }
+        }
+
         void UpdateGame()
         {
-            if (Game.Tick() > options.Duration * 20)
+            if (Game.Tick() > options.Duration * Interop.UW_GameTicksPerSecond)
                 Interop.uwAdminTerminateGame();
-            // todo suggest camera
+            long current = stopWatch.ElapsedMilliseconds;
+            if (current > lastCameraUpdate + 5000)
+            {
+                lastCameraUpdate = current;
+                SuggestCamera();
+            }
         }
 
         void Updating(object sender, bool stepping)
@@ -131,6 +214,7 @@ namespace Unnatural
         {
             options = options_;
             Game.Updating += Updating;
+            Game.Shooting += Shooting;
         }
 
         static int Main(string[] args)
