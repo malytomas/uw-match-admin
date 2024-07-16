@@ -73,10 +73,10 @@ namespace Unnatural
         {
             bool result = true;
             var forces = new HashSet<uint>();
+            var playerIds = new HashSet<ulong>();
             ulong myUserId = Interop.uwGetUserId();
 
-            var players = World.Entities().Values.Where(x => Entity.Has(x, "Player")).ToArray();
-            foreach (var player in players)
+            foreach (var player in World.Entities().Values.Where(x => Entity.Has(x, "Player")))
             {
                 uint id = player.Id;
                 Interop.UwPlayerComponent p = player.Player;
@@ -89,19 +89,25 @@ namespace Unnatural
                     {
                         Interop.uwAdminKickPlayer(id);
                         result = false;
-                        continue;
                     }
                 }
 
-                // check player id
+                // check allowed user id
                 if (p.steamUserId != myUserId && options.Players.Count() > 0)
                 {
                     if (!options.Players.Contains(id))
                     {
                         Interop.uwAdminKickPlayer(id);
                         result = false;
-                        continue;
                     }
+                }
+
+                // check duplicate user id
+                if (p.steamUserId != myUserId && p.force != Invalid)
+                {
+                    if (playerIds.Contains(p.steamUserId))
+                        result = false;
+                    playerIds.Add(p.steamUserId);
                 }
 
                 // check one player per force
@@ -109,8 +115,7 @@ namespace Unnatural
                 {
                     if (forces.Contains(p.force))
                         result = false;
-                    else
-                        forces.Add(p.force);
+                    forces.Add(p.force);
                 }
 
                 // check loaded
@@ -127,6 +132,11 @@ namespace Unnatural
                 result = false;
 
             // check all players present
+            if (options.Players.Count() > 0)
+            {
+                if (!playerIds.SetEquals(options.Players))
+                    result = false;
+            }
 
             return result;
         }
