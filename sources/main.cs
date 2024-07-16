@@ -57,7 +57,7 @@ namespace Unnatural
         {
             var mapsList = options.Maps.ToList();
             if (mapsList.Count == 0)
-                throw new InvalidOperationException("No maps.");
+                throw new InvalidOperationException("no maps");
             int randomIndex = random.Next(mapsList.Count);
             return mapsList[randomIndex];
         }
@@ -87,6 +87,7 @@ namespace Unnatural
                     var expected = options.Uwapi ? Interop.UwPlayerConnectionClassEnum.UwApi : Interop.UwPlayerConnectionClassEnum.Computer;
                     if (p.playerConnectionClass != expected)
                     {
+                        Console.WriteLine("kicking player - wrong type");
                         Interop.uwAdminKickPlayer(id);
                         result = false;
                     }
@@ -95,8 +96,9 @@ namespace Unnatural
                 // check allowed user id
                 if (p.steamUserId != myUserId && options.Players.Count() > 0)
                 {
-                    if (!options.Players.Contains(id))
+                    if (!options.Players.Contains(p.steamUserId))
                     {
+                        Console.WriteLine("kicking player - wrong id");
                         Interop.uwAdminKickPlayer(id);
                         result = false;
                     }
@@ -143,8 +145,16 @@ namespace Unnatural
 
         void UpdateSession()
         {
-            if (World.Entities().Count == 0)
-                return;
+            {
+                var mp = new Interop.UwMyPlayer();
+                if (!Interop.uwMyPlayer(ref mp))
+                    return;
+                if (!mp.admin)
+                {
+                    Console.WriteLine("not admin");
+                    return;
+                }
+            }
             if (stopWatch.ElapsedMilliseconds > options.Timeout * 1000)
             {
                 Console.WriteLine("timeout reached");
