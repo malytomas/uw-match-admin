@@ -38,19 +38,70 @@ namespace Unnatural
 
     class MatchAdmin
     {
-        static readonly uint Invalid = 4294967295;
+        const uint Invalid = 4294967295;
         readonly Stopwatch stopWatch = new Stopwatch();
         readonly Options options;
         readonly Random random = new Random();
         uint startCountdown = 0;
-        long lastCameraUpdate = 0;
-        uint? lastShotPosition = null;
-        int lastPlayerIndex = 0;
         bool initialized = false;
+
+        long lastCameraUpdate = 0;
+        readonly Dictionary<uint, uint> forcesShootingPosition = new Dictionary<uint, uint>();
+        readonly Dictionary<uint, uint> forcesBuildingPosition = new Dictionary<uint, uint>();
+        int lastShootingForceIndex = 0;
+        int lastBuildingForceIndex = 0;
 
         void Shooting(object sender, Interop.UwShootingData[] data)
         {
-            lastShotPosition = data[0].shooter.position;
+            foreach (var it in data)
+            {
+                forcesShootingPosition.Remove(it.shooter.force);
+                forcesShootingPosition.Add(it.shooter.force, it.shooter.position);
+            }
+        }
+
+        static bool IsNewBuilding(dynamic x)
+        {
+            if (!Entity.Has(x, "Unit"))
+                return false;
+            if (Entity.Has(x, "Visited"))
+                return false;
+            uint p = x.Proto.proto;
+            return Prototypes.Type(p) == Interop.UwPrototypeTypeEnum.Unit && Prototypes.Unit(p).buildingRadius > 0;
+        }
+
+        void Buildings()
+        {
+            foreach (var b in World.Entities().Values.Where(x => IsNewBuilding(x)))
+            {
+                uint o = b.Owner.force;
+                forcesBuildingPosition.Remove(o);
+                forcesBuildingPosition.Add(o, b.Position.position);
+                b.Visited = true;
+            }
+        }
+
+        void SuggestCamera()
+        {
+            var forces = World.Entities().Values.Where(x => Entity.Has(x, "Force") && (x.Force.state & Interop.UwForceStateFlags.Defeated) == 0).Select(x => (uint)x.Id).ToList();
+            if (forces.Count() == 0)
+                return;
+
+            // shooting
+            forcesShootingPosition.Keys.Where(key => !forces.Contains(key)).ToList().ForEach(key => forcesShootingPosition.Remove(key));
+            if (forcesShootingPosition.Count() > 0)
+            {
+                lastShootingForceIndex = (lastShootingForceIndex + 1) % forces.Count();
+                while (!forcesShootingPosition.ContainsKey(forces[lastShootingForceIndex]))
+                    lastShootingForceIndex = (lastShootingForceIndex + 1) % forces.Count();
+                Interop.uwSendCameraSuggestion(forcesShootingPosition[forces[lastShootingForceIndex]]);
+                forcesShootingPosition.Clear();
+                return;
+            }
+
+            // buildings
+            lastBuildingForceIndex = (lastBuildingForceIndex + 1) % forces.Count();
+            Interop.uwSendCameraSuggestion(forcesBuildingPosition[forces[lastBuildingForceIndex]]);
         }
 
         string PickMap()
@@ -109,7 +160,8 @@ namespace Unnatural
                 {
                     if (playerIds.Contains(p.steamUserId))
                         result = false;
-                    playerIds.Add(p.steamUserId);
+                    else
+                        playerIds.Add(p.steamUserId);
                 }
 
                 // check one player per force
@@ -117,7 +169,8 @@ namespace Unnatural
                 {
                     if (forces.Contains(p.force))
                         result = false;
-                    forces.Add(p.force);
+                    else
+                        forces.Add(p.force);
                 }
 
                 // check loaded
@@ -137,6 +190,13 @@ namespace Unnatural
             if (options.Players.Count() > 0)
             {
                 if (!playerIds.SetEquals(options.Players))
+                    result = false;
+            }
+
+            // check map is filled
+            if (options.Players.Count() == 0)
+            {
+                if (forces.Count() < Map.MaxPlayers())
                     result = false;
             }
 
@@ -175,26 +235,15 @@ namespace Unnatural
                 startCountdown = 0;
         }
 
-        void SuggestCamera()
-        {
-            if (lastShotPosition != null)
-            {
-                Interop.uwSendCameraSuggestion(lastShotPosition.Value);
-                lastShotPosition = null;
-            }
-            else
-            {
-                var players = World.Entities().Values.Where(x => Entity.Has(x, "ForceDetails")).ToArray();
-                Debug.Assert(players.Count() > 0);
-                lastPlayerIndex = (lastPlayerIndex + 1) % players.Count();
-                Interop.uwSendCameraSuggestion(players[lastPlayerIndex].ForceDetails.startingPosition);
-            }
-        }
-
         void UpdateGame()
         {
             if (Game.Tick() > options.Duration * Interop.UW_GameTicksPerSecond)
+            {
                 Interop.uwAdminTerminateGame();
+                return;
+            }
+
+            Buildings();
             long current = stopWatch.ElapsedMilliseconds;
             if (current > lastCameraUpdate + 5000)
             {
