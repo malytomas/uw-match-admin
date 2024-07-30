@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
 using CommandLine;
 
 namespace Unnatural
@@ -44,6 +46,7 @@ namespace Unnatural
         readonly Random random = new Random();
         uint startCountdown = 0;
         bool initialized = false;
+        Task<HttpResponseMessage> publishLobbyTask;
 
         long lastCameraUpdate = 0;
         readonly Dictionary<uint, uint> forcesShootingPosition = new Dictionary<uint, uint>();
@@ -113,11 +116,34 @@ namespace Unnatural
             return mapsList[randomIndex];
         }
 
+        void PublishLobby()
+        {
+            const string urlBase = "127.0.0.1/api/publish_lobby";
+            var url = urlBase + "?lobby_id=" + Interop.uwGetLobbyId() + "&players=" + string.Join(",", options.Players.Select(x => x.ToString()));
+            var c = new HttpClient();
+            publishLobbyTask = c.GetAsync(url);
+        }
+
+        bool CheckLobbyPublication()
+        {
+            switch (publishLobbyTask.Status)
+            {
+                case TaskStatus.Canceled:
+                case TaskStatus.Faulted:
+                    throw publishLobbyTask.Exception ?? new Exception("failed to publish lobby id");
+                case TaskStatus.RanToCompletion:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         void Initialize()
         {
             for (int i = 0; i < options.Bots; i++)
                 Interop.uwAdminAddAi();
             Interop.uwSendMapSelection(PickMap());
+            PublishLobby();
         }
 
         bool CheckPlayers()
@@ -226,6 +252,8 @@ namespace Unnatural
                 initialized = true;
                 Initialize();
             }
+            if (!CheckLobbyPublication())
+                return;
             if (CheckPlayers())
             {
                 if (startCountdown++ > Interop.UW_GameTicksPerSecond)
