@@ -46,6 +46,7 @@ namespace Unnatural
         readonly Random random = new Random();
         uint startCountdown = 0;
         bool initialized = false;
+        readonly string publishLobbyBaseUrl;
         Task<HttpResponseMessage> publishLobbyTask;
 
         long lastCameraUpdate = 0;
@@ -118,8 +119,7 @@ namespace Unnatural
 
         void PublishLobby()
         {
-            const string urlBase = "127.0.0.1/api/publish_lobby";
-            var url = urlBase + "?lobby_id=" + Interop.uwGetLobbyId() + "&players=" + string.Join(",", options.Players.Select(x => x.ToString()));
+            var url = publishLobbyBaseUrl + "/api/publish_lobby?lobby_id=" + Interop.uwGetLobbyId() + "&players=" + string.Join(",", options.Players.Select(x => x.ToString()));
             var c = new HttpClient();
             publishLobbyTask = c.GetAsync(url);
         }
@@ -130,6 +130,8 @@ namespace Unnatural
             {
                 case TaskStatus.Canceled:
                 case TaskStatus.Faulted:
+                    Interop.uwLog(Interop.UwSeverityEnum.Error, "failed to publish lobby id");
+                    Interop.uwAdminTerminateGame();
                     throw publishLobbyTask.Exception ?? new Exception("failed to publish lobby id");
                 case TaskStatus.RanToCompletion:
                     return true;
@@ -142,7 +144,9 @@ namespace Unnatural
         {
             for (int i = 0; i < options.Bots; i++)
                 Interop.uwAdminAddAi();
-            Interop.uwSendMapSelection(PickMap());
+            string map = PickMap();
+            Interop.uwLog(Interop.UwSeverityEnum.Info, "chosen map: " + map);
+            Interop.uwSendMapSelection(map);
             PublishLobby();
         }
 
@@ -164,7 +168,7 @@ namespace Unnatural
                     var expected = options.Uwapi ? Interop.UwPlayerConnectionClassEnum.UwApi : Interop.UwPlayerConnectionClassEnum.Computer;
                     if (p.playerConnectionClass != expected)
                     {
-                        Console.WriteLine("kicking player - wrong type");
+                        Interop.uwLog(Interop.UwSeverityEnum.Info, "kicking player - wrong type");
                         Interop.uwAdminKickPlayer(id);
                         result = false;
                     }
@@ -175,7 +179,7 @@ namespace Unnatural
                 {
                     if (!options.Players.Contains(p.steamUserId))
                     {
-                        Console.WriteLine("kicking player - wrong id");
+                        Interop.uwLog(Interop.UwSeverityEnum.Info, "kicking player - wrong id");
                         Interop.uwAdminKickPlayer(id);
                         result = false;
                     }
@@ -237,13 +241,13 @@ namespace Unnatural
                     return;
                 if (!mp.admin)
                 {
-                    Console.WriteLine("not admin");
+                    Interop.uwLog(Interop.UwSeverityEnum.Warning, "not admin (yet)");
                     return;
                 }
             }
             if (stopWatch.ElapsedMilliseconds > options.Timeout * 1000)
             {
-                Console.WriteLine("timeout reached");
+                Interop.uwLog(Interop.UwSeverityEnum.Error, "session timeout reached");
                 Interop.uwAdminTerminateGame();
                 return;
             }
@@ -257,7 +261,11 @@ namespace Unnatural
             if (CheckPlayers())
             {
                 if (startCountdown++ > Interop.UW_GameTicksPerSecond)
+                {
+                    Interop.uwLog(Interop.UwSeverityEnum.Info, "starting game");
                     Interop.uwAdminStartGame();
+                    startCountdown = 0;
+                }
             }
             else
                 startCountdown = 0;
@@ -267,6 +275,7 @@ namespace Unnatural
         {
             if (Game.Tick() > options.Duration * Interop.UW_GameTicksPerSecond)
             {
+                Interop.uwLog(Interop.UwSeverityEnum.Error, "game max duration reached");
                 Interop.uwAdminTerminateGame();
                 return;
             }
@@ -302,14 +311,15 @@ namespace Unnatural
             Game.SetPlayerColor(0, 0, 0);
             Interop.uwSetConnectAsObserver(true);
             Game.SetStartGui(options.Observer.Value, "--observer 2 --name match-observer");
-            Console.WriteLine("starting");
+            Interop.uwLog(Interop.UwSeverityEnum.Info, "starting");
             Game.ConnectNewServer(options.Visibility, options.Name, "--allowUwApiAdmin 1");
-            Console.WriteLine("done");
+            Interop.uwLog(Interop.UwSeverityEnum.Info, "done");
         }
 
-        MatchAdmin(Options options_)
+        MatchAdmin(Options options_, string publishLobbyBaseUrl_)
         {
             options = options_;
+            publishLobbyBaseUrl = publishLobbyBaseUrl_;
             Game.Updating += Updating;
             Game.Shooting += Shooting;
         }
@@ -329,7 +339,11 @@ namespace Unnatural
             if (options.Tag == ParserResultType.NotParsed)
                 return 2;
 
-            MatchAdmin admin = new MatchAdmin(options.Value);
+            string publishLobbyBaseUrl = Environment.GetEnvironmentVariable("UNNATURAL_HTTP_URL");
+            if (publishLobbyBaseUrl == null)
+                publishLobbyBaseUrl = "http://127.0.0.1/";
+
+            MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
             admin.Start();
             return 0;
         }
