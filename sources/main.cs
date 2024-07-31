@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Threading.Tasks;
 using CommandLine;
 
@@ -119,13 +121,18 @@ namespace Unnatural
 
         void PublishLobby()
         {
-            var url = publishLobbyBaseUrl + "/api/publish_lobby?lobby_id=" + Interop.uwGetLobbyId() + "&players=" + string.Join(",", options.Players.Select(x => x.ToString()));
-            var c = new HttpClient();
-            publishLobbyTask = c.GetAsync(url);
+            Interop.uwLog(Interop.UwSeverityEnum.Info, "publishing lobby id");
+            string url = publishLobbyBaseUrl + "/api/publish_lobby";
+            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"players\": [\"" + string.Join("\",\"", options.Players.Select(x => x.ToString())) + "\"]}";
+            HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
+            HttpClient client = new HttpClient();
+            publishLobbyTask = client.PostAsync(url, content);
         }
 
         bool CheckLobbyPublication()
         {
+            if (publishLobbyTask == null)
+                return true;
             switch (publishLobbyTask.Status)
             {
                 case TaskStatus.Canceled:
@@ -134,6 +141,7 @@ namespace Unnatural
                     Interop.uwAdminTerminateGame();
                     throw publishLobbyTask.Exception ?? new Exception("failed to publish lobby id");
                 case TaskStatus.RanToCompletion:
+                    publishLobbyTask = null;
                     return true;
                 default:
                     return false;
@@ -142,6 +150,7 @@ namespace Unnatural
 
         void Initialize()
         {
+            Interop.uwLog(Interop.UwSeverityEnum.Info, "initializing");
             for (int i = 0; i < options.Bots; i++)
                 Interop.uwAdminAddAi();
             string map = PickMap();
