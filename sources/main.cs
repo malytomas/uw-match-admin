@@ -344,13 +344,16 @@ namespace Unnatural
             }
             System.IO.Directory.SetCurrentDirectory(root);
 
+            string publishLobbyBaseUrl = Environment.GetEnvironmentVariable("UNNATURAL_URL");
+            if (publishLobbyBaseUrl == null)
+            {
+                Console.Error.WriteLine("Environment variable UNNATURAL_URL must be set.");
+                return 1;
+            }
+
             var options = Parser.Default.ParseArguments<Options>(args);
             if (options.Tag == ParserResultType.NotParsed)
                 return 2;
-
-            string publishLobbyBaseUrl = Environment.GetEnvironmentVariable("UNNATURAL_HTTP_URL");
-            if (publishLobbyBaseUrl == null)
-                publishLobbyBaseUrl = "http://127.0.0.1/";
 
             MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
             admin.Start();
