@@ -123,9 +123,10 @@ namespace Unnatural
         {
             Interop.uwLog(Interop.UwSeverityEnum.Info, "publishing lobby id");
             string url = publishLobbyBaseUrl + "/api/publish_lobby";
-            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"players\": [\"" + string.Join("\",\"", options.Players.Select(x => x.ToString())) + "\"]}";
+            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"steam_ids\": [\"" + string.Join("\",\"", options.Players.Select(x => x.ToString())) + "\"]}";
             HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
             HttpClient client = new HttpClient();
+            client.DefaultRequestHeaders.Add("Authorization", "Bearer admin");
             publishLobbyTask = client.PostAsync(url, content);
         }
 
@@ -141,6 +142,10 @@ namespace Unnatural
                     Interop.uwAdminTerminateGame();
                     throw publishLobbyTask.Exception ?? new Exception("failed to publish lobby id");
                 case TaskStatus.RanToCompletion:
+                    var response = publishLobbyTask.Result;
+                    Interop.uwLog(Interop.UwSeverityEnum.Info, "received response from http server, code: " + response.StatusCode);
+                    if (!response.IsSuccessStatusCode)
+                        throw new Exception("failed lobby task publish");
                     publishLobbyTask = null;
                     return true;
                 default:
