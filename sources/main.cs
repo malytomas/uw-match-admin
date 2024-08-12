@@ -75,6 +75,7 @@ namespace Unnatural
                 }
                 else
                 {
+                    Console.WriteLine(">" + p + "<");
                     throw new Exception("parameter is not a steam id nor team separator");
                 }
             }
@@ -316,14 +317,19 @@ namespace Unnatural
 
         bool CheckTeams()
         {
+            if (players.Count == 0)
+                return true;
+
             bool result = true;
 
             var playerToTeam = new Dictionary<ulong, uint>();
             var playerToForce = new Dictionary<ulong, uint>();
             foreach (var player in World.Entities().Values.Where(x => Entity.Has(x, "Player")))
             {
-                ulong sid = player.steamUserId;
+                ulong sid = player.Player.steamUserId;
                 uint force = player.Player.force;
+                if (force == 0 || force == Invalid)
+                    continue;
                 uint team = World.Entity(force).Force.team;
                 playerToTeam.Add(sid, team);
                 playerToForce.Add(sid, force);
@@ -457,7 +463,10 @@ namespace Unnatural
 
             var options = Parser.Default.ParseArguments<Options>(args);
             if (options.Tag == ParserResultType.NotParsed)
+            {
+                Console.Error.WriteLine("Failed parsing options.");
                 return 2;
+            }
 
             /*
             { // debug print of parsed teams
@@ -472,8 +481,9 @@ namespace Unnatural
                 MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
                 admin.Start();
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                Console.Error.WriteLine(e);
                 Interop.uwAdminTerminateGame();
                 throw;
             }
