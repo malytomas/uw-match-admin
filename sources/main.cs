@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Media;
 using System.Net;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using CommandLine;
@@ -12,8 +14,8 @@ namespace Unnatural
 {
     class Options
     {
-        [Option('p', "players", Required = false, Separator = ' ', HelpText = "Steam IDs of players (or leave empty for any players).")]
-        public IEnumerable<ulong> Players { get; set; }
+        [Option('p', "players", Required = false, Separator = ' ', HelpText = "Steam IDs of players (or leave empty for any players). Use spaces to separate multiple ids. Use underscore to separate teams. (If no teams are defined the game will be treated as FFA.)")]
+        public IEnumerable<string> PlayersAndTeams { get; set; }
 
         [Option('m', "maps", Required = true, Separator = ' ', HelpText = "Paths of maps (one will be chosen randomly).")]
         public IEnumerable<string> Maps { get; set; }
@@ -36,8 +38,71 @@ namespace Unnatural
         [Option('o', "observer", Default = true, Required = false, HelpText = "Start local observer.")]
         public bool? Observer { get; set; }
 
+        [Option('a', "anouncement", Default = false, Required = false, HelpText = "Anounce lobby id and list of players to http-server.")]
+        public bool? Anouncement { get; set; }
+
         [Option('b', "bots", Default = (uint)0, Required = false, HelpText = "Number of built-in AI players to add to the game.")]
         public uint Bots { get; set; }
+
+        public List<ulong> ExtractPlayers()
+        {
+            List<ulong> ps = new List<ulong>();
+            foreach (string p in PlayersAndTeams)
+            {
+                ulong u;
+                if (ulong.TryParse(p, out u))
+                    ps.Add(u);
+            }
+            return ps;
+        }
+
+        public List<List<ulong>> ExtractTeams()
+        {
+            List<List<ulong>> teams = new List<List<ulong>>();
+            List<ulong> t = new List<ulong>();
+            foreach (string p in PlayersAndTeams)
+            {
+                ulong u;
+                if (ulong.TryParse(p, out u))
+                    t.Add(u);
+                else if (p == "_")
+                {
+                    if (t.Count > 0)
+                    {
+                        teams.Add(t);
+                        t = new List<ulong>();
+                    }
+                }
+                else
+                {
+                    throw new Exception("parameter is not a steam id nor team separator");
+                }
+            }
+            if (t.Count > 0)
+            {
+                teams.Add(t);
+                t = new List<ulong>();
+            }
+
+            if (teams.Count > 1)
+                return teams;
+
+            if (teams.Count == 0)
+                return teams;
+
+            teams = new List<List<ulong>>();
+            foreach (string p in PlayersAndTeams)
+            {
+                ulong u;
+                if (ulong.TryParse(p, out u))
+                {
+                    t = new List<ulong>();
+                    t.Add(u);
+                    teams.Add(t);
+                }
+            }
+            return teams;
+        }
     }
 
     class MatchAdmin
@@ -45,6 +110,8 @@ namespace Unnatural
         const uint Invalid = 4294967295;
         readonly Stopwatch stopWatch = new Stopwatch();
         readonly Options options;
+        readonly List<ulong> players;
+        readonly List<List<ulong>> teams;
         readonly Random random = new Random();
         uint startCountdown = 0;
         bool initialized = false;
@@ -114,7 +181,7 @@ namespace Unnatural
         {
             var mapsList = options.Maps.ToList();
             if (mapsList.Count == 0)
-                throw new InvalidOperationException("no maps");
+                throw new Exception("no maps");
             int randomIndex = random.Next(mapsList.Count);
             return mapsList[randomIndex];
         }
@@ -123,7 +190,7 @@ namespace Unnatural
         {
             Interop.uwLog(Interop.UwSeverityEnum.Info, "publishing lobby id");
             string url = publishLobbyBaseUrl + "/api/publish_lobby";
-            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"steam_ids\": [\"" + string.Join("\",\"", options.Players.Select(x => x.ToString())) + "\"]}";
+            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"steam_ids\": [\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]}";
             HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
             HttpClient client = new HttpClient();
             client.DefaultRequestHeaders.Add("Authorization", "Bearer admin");
@@ -138,12 +205,11 @@ namespace Unnatural
             {
                 case TaskStatus.Canceled:
                 case TaskStatus.Faulted:
-                    Interop.uwLog(Interop.UwSeverityEnum.Error, "failed to publish lobby id");
-                    Interop.uwAdminTerminateGame();
+                    Game.LogError("failed to publish lobby id");
                     throw publishLobbyTask.Exception ?? new Exception("failed to publish lobby id");
                 case TaskStatus.RanToCompletion:
                     var response = publishLobbyTask.Result;
-                    Interop.uwLog(Interop.UwSeverityEnum.Info, "received response from http server, code: " + response.StatusCode);
+                    Game.LogInfo("received response from http server, code: " + response.StatusCode);
                     if (!response.IsSuccessStatusCode)
                         throw new Exception("failed lobby task publish");
                     publishLobbyTask = null;
@@ -161,7 +227,8 @@ namespace Unnatural
             string map = PickMap();
             Interop.uwLog(Interop.UwSeverityEnum.Info, "chosen map: " + map);
             Interop.uwSendMapSelection(map);
-            PublishLobby();
+            if (options.Anouncement.Value)
+                PublishLobby();
         }
 
         bool CheckPlayers()
@@ -189,9 +256,9 @@ namespace Unnatural
                 }
 
                 // check allowed user id
-                if (p.steamUserId != myUserId && options.Players.Count() > 0)
+                if (p.steamUserId != myUserId && players.Count() > 0)
                 {
-                    if (!options.Players.Contains(p.steamUserId))
+                    if (!players.Contains(p.steamUserId))
                     {
                         Interop.uwLog(Interop.UwSeverityEnum.Info, "kicking player - wrong id");
                         Interop.uwAdminKickPlayer(id);
@@ -231,17 +298,48 @@ namespace Unnatural
                 result = false;
 
             // check all players present
-            if (options.Players.Count() > 0)
+            if (players.Count() > 0)
             {
-                if (!playerIds.SetEquals(options.Players))
+                if (!playerIds.SetEquals(players))
                     result = false;
             }
 
             // check map is filled
-            if (options.Players.Count() == 0)
+            if (players.Count() == 0)
             {
                 if (forces.Count() < Map.MaxPlayers())
                     result = false;
+            }
+
+            return result;
+        }
+
+        bool CheckTeams()
+        {
+            bool result = true;
+
+            var playerToTeam = new Dictionary<ulong, uint>();
+            var playerToForce = new Dictionary<ulong, uint>();
+            foreach (var player in World.Entities().Values.Where(x => Entity.Has(x, "Player")))
+            {
+                ulong sid = player.steamUserId;
+                uint force = player.Player.force;
+                uint team = World.Entity(force).Force.team;
+                playerToTeam.Add(sid, team);
+                playerToForce.Add(sid, force);
+            }
+
+            foreach (var ps in teams)
+            {
+                uint t = playerToTeam[ps[0]];
+                foreach (ulong p in ps)
+                {
+                    if (playerToTeam[p] != t)
+                    {
+                        result = false;
+                        Interop.uwAdminForceJoinTeam(playerToForce[p], t);
+                    }
+                }
             }
 
             return result;
@@ -255,15 +353,14 @@ namespace Unnatural
                     return;
                 if (!mp.admin)
                 {
-                    Interop.uwLog(Interop.UwSeverityEnum.Warning, "not admin (yet)");
+                    Game.LogWarning("not admin (yet)");
                     return;
                 }
             }
             if (stopWatch.ElapsedMilliseconds > options.Timeout * 1000)
             {
-                Interop.uwLog(Interop.UwSeverityEnum.Error, "session timeout reached");
-                Interop.uwAdminTerminateGame();
-                return;
+                Game.LogError("session timeout reached");
+                throw new Exception("session timed out");
             }
             if (!initialized)
             {
@@ -272,7 +369,7 @@ namespace Unnatural
             }
             if (!CheckLobbyPublication())
                 return;
-            if (CheckPlayers())
+            if (CheckPlayers() && CheckTeams())
             {
                 if (startCountdown++ > Interop.UW_GameTicksPerSecond)
                 {
@@ -289,7 +386,7 @@ namespace Unnatural
         {
             if (Game.Tick() > options.Duration * Interop.UW_GameTicksPerSecond)
             {
-                Interop.uwLog(Interop.UwSeverityEnum.Error, "game max duration reached");
+                Game.LogError("game max duration reached");
                 Interop.uwAdminTerminateGame();
                 return;
             }
@@ -333,6 +430,8 @@ namespace Unnatural
         MatchAdmin(Options options_, string publishLobbyBaseUrl_)
         {
             options = options_;
+            players = options_.ExtractPlayers();
+            teams = options_.ExtractTeams();
             publishLobbyBaseUrl = publishLobbyBaseUrl_;
             Game.Updating += Updating;
             Game.Shooting += Shooting;
@@ -360,8 +459,24 @@ namespace Unnatural
             if (options.Tag == ParserResultType.NotParsed)
                 return 2;
 
-            MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
-            admin.Start();
+            /*
+            { // debug print of parsed teams
+                var teams = options.Value.ExtractTeams();
+                Console.WriteLine(string.Join(" | ", teams.Select(team => string.Join(" ", team))));
+                return 0;
+            }
+            */
+
+            try
+            {
+                MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
+                admin.Start();
+            }
+            catch (Exception)
+            {
+                Interop.uwAdminTerminateGame();
+                throw;
+            }
             return 0;
         }
     }
