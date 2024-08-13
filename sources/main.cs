@@ -2,10 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Media;
-using System.Net;
 using System.Net.Http;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using CommandLine;
@@ -38,8 +35,8 @@ namespace Unnatural
         [Option('o', "observer", Default = true, Required = false, HelpText = "Start local observer.")]
         public bool? Observer { get; set; }
 
-        [Option('a', "anouncement", Default = false, Required = false, HelpText = "Anounce lobby id and list of players to http-server.")]
-        public bool? Anouncement { get; set; }
+        [Option('a', "announcement", Default = false, Required = false, HelpText = "Announce lobby id and list of players to http-server.")]
+        public bool? Announcement { get; set; }
 
         [Option('b', "bots", Default = (uint)0, Required = false, HelpText = "Number of built-in AI players to add to the game.")]
         public uint Bots { get; set; }
@@ -103,6 +100,60 @@ namespace Unnatural
                 }
             }
             return teams;
+        }
+    }
+
+    class ColorConverter
+    {
+        public static void HsvToRgb(float h, float s, float v, out float r, out float g, out float b)
+        {
+            float c = v * s; // Chroma
+            float x = c * (1 - Math.Abs((h * 6) % 2 - 1)); // Intermediate value
+            float m = v - c;
+
+            float r1, g1, b1;
+
+            if (h < 1.0 / 6.0)
+            {
+                r1 = c;
+                g1 = x;
+                b1 = 0;
+            }
+            else if (h < 2.0 / 6.0)
+            {
+                r1 = x;
+                g1 = c;
+                b1 = 0;
+            }
+            else if (h < 3.0 / 6.0)
+            {
+                r1 = 0;
+                g1 = c;
+                b1 = x;
+            }
+            else if (h < 4.0 / 6.0)
+            {
+                r1 = 0;
+                g1 = x;
+                b1 = c;
+            }
+            else if (h < 5.0 / 6.0)
+            {
+                r1 = x;
+                g1 = 0;
+                b1 = c;
+            }
+            else
+            {
+                r1 = c;
+                g1 = 0;
+                b1 = x;
+            }
+
+            // Adding m to match the lightness
+            r = r1 + m;
+            g = g1 + m;
+            b = b1 + m;
         }
     }
 
@@ -191,7 +242,7 @@ namespace Unnatural
         {
             Interop.uwLog(Interop.UwSeverityEnum.Info, "publishing lobby id");
             string url = publishLobbyBaseUrl + "/api/publish_lobby";
-            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"steam_ids\": [\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]}";
+            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"server_address\":\"" + Environment.GetEnvironmentVariable("UNNATURAL_MY_ADDR") + "\",\"server_port\":\"" + Interop.uwGetServerPort() + "\",\"steam_ids\": [\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]}";
             HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
             HttpClient client = new HttpClient();
             client.DefaultRequestHeaders.Add("Authorization", "Bearer admin");
@@ -228,7 +279,7 @@ namespace Unnatural
             string map = PickMap();
             Interop.uwLog(Interop.UwSeverityEnum.Info, "chosen map: " + map);
             Interop.uwSendMapSelection(map);
-            if (options.Anouncement.Value)
+            if (options.Announcement.Value)
                 PublishLobby();
         }
 
@@ -312,38 +363,44 @@ namespace Unnatural
                     result = false;
             }
 
-            return result;
-        }
-
-        bool CheckTeams()
-        {
-            if (players.Count == 0)
-                return true;
-
-            bool result = true;
-
-            var playerToTeam = new Dictionary<ulong, uint>();
-            var playerToForce = new Dictionary<ulong, uint>();
-            foreach (var player in World.Entities().Values.Where(x => Entity.Has(x, "Player")))
+            // check teams
+            if (players.Count > 0)
             {
-                ulong sid = player.Player.steamUserId;
-                uint force = player.Player.force;
-                if (force == 0 || force == Invalid)
-                    continue;
-                uint team = World.Entity(force).Force.team;
-                playerToTeam.Add(sid, team);
-                playerToForce.Add(sid, force);
-            }
-
-            foreach (var ps in teams)
-            {
-                uint t = playerToTeam[ps[0]];
-                foreach (ulong p in ps)
+                var playerToTeam = new Dictionary<ulong, uint>();
+                var playerToForce = new Dictionary<ulong, uint>();
+                foreach (var player in World.Entities().Values.Where(x => Entity.Has(x, "Player")))
                 {
-                    if (playerToTeam[p] != t)
+                    ulong sid = player.Player.steamUserId;
+                    uint force = player.Player.force;
+                    if (force == 0 || force == Invalid)
+                        continue;
+                    uint team = World.Entity(force).Force.team;
+                    playerToTeam.Add(sid, team);
+                    playerToForce.Add(sid, force);
+                }
+
+                foreach (var ps in teams)
+                {
+                    uint t = playerToTeam[ps[0]];
+                    foreach (ulong p in ps)
                     {
-                        result = false;
-                        Interop.uwAdminForceJoinTeam(playerToForce[p], t);
+                        if (playerToTeam[p] != t)
+                        {
+                            result = false;
+                            Interop.uwAdminForceJoinTeam(playerToForce[p], t);
+                        }
+                    }
+                }
+
+                { // update colors
+                    int i = 0;
+                    foreach (ulong p in players)
+                    {
+                        float h = (float)i / (float)players.Count;
+                        float r, g, b;
+                        ColorConverter.HsvToRgb(h, 1, 1, out r, out g, out b);
+                        Interop.uwAdminForceSetColor(playerToForce[p], r, g, b);
+                        i++;
                     }
                 }
             }
@@ -375,7 +432,7 @@ namespace Unnatural
             }
             if (!CheckLobbyPublication())
                 return;
-            if (CheckPlayers() && CheckTeams())
+            if (CheckPlayers())
             {
                 if (startCountdown++ > Interop.UW_GameTicksPerSecond)
                 {
