@@ -242,7 +242,8 @@ namespace Unnatural
         {
             Interop.uwLog(Interop.UwSeverityEnum.Info, "publishing lobby id");
             string url = publishLobbyBaseUrl + "/api/publish_lobby";
-            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"server_address\":\"" + (Environment.GetEnvironmentVariable("UNNATURAL_MY_ADDR") ?? "") + "\",\"server_port\":\"" + Interop.uwGetServerPort() + "\",\"steam_ids\": [\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]}";
+            string ps = players.Count == 0 ? "[]" : "[\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]";
+            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"server_address\":\"" + (Environment.GetEnvironmentVariable("UNNATURAL_MY_ADDR") ?? "") + "\",\"server_port\":\"" + Interop.uwGetServerPort() + "\",\"steam_ids\": " + ps + "}";
             HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
             HttpClient client = new HttpClient();
             client.DefaultRequestHeaders.Add("Authorization", "Bearer admin");
