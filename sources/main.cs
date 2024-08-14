@@ -363,7 +363,7 @@ namespace Unnatural
                     result = false;
             }
 
-            // check teams
+            // teams
             if (players.Count > 0)
             {
                 var playerToTeam = new Dictionary<ulong, uint>();
@@ -379,11 +379,17 @@ namespace Unnatural
                     playerToForce.Add(sid, force);
                 }
 
+                // check and set teams
                 foreach (var ps in teams)
                 {
-                    uint t = playerToTeam[ps[0]];
+                    ulong primary = ps[0];
+                    if (!playerToTeam.ContainsKey(primary))
+                        continue;
+                    uint t = playerToTeam[primary];
                     foreach (ulong p in ps)
                     {
+                        if (!playerToTeam.ContainsKey(p))
+                            continue;
                         if (playerToTeam[p] != t)
                         {
                             result = false;
@@ -396,6 +402,8 @@ namespace Unnatural
                     int i = 0;
                     foreach (ulong p in players)
                     {
+                        if (!playerToForce.ContainsKey(p))
+                            continue;
                         float h = (float)i / (float)players.Count;
                         float r, g, b;
                         ColorConverter.HsvToRgb(h, 1, 1, out r, out g, out b);
@@ -533,17 +541,8 @@ namespace Unnatural
             }
             */
 
-            try
-            {
-                MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
-                admin.Start();
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine(e);
-                Interop.uwAdminTerminateGame();
-                throw;
-            }
+            MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
+            admin.Start();
             return 0;
         }
     }
