@@ -242,7 +242,7 @@ namespace Unnatural
         {
             Interop.uwLog(Interop.UwSeverityEnum.Info, "publishing lobby id");
             string url = publishLobbyBaseUrl + "/api/publish_lobby";
-            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"server_address\":\"" + Environment.GetEnvironmentVariable("UNNATURAL_MY_ADDR") + "\",\"server_port\":\"" + Interop.uwGetServerPort() + "\",\"steam_ids\": [\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]}";
+            string data = "{\"lobby_id\":\"" + Interop.uwGetLobbyId() + "\",\"server_address\":\"" + (Environment.GetEnvironmentVariable("UNNATURAL_MY_ADDR") ?? "") + "\",\"server_port\":\"" + Interop.uwGetServerPort() + "\",\"steam_ids\": [\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]}";
             HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
             HttpClient client = new HttpClient();
             client.DefaultRequestHeaders.Add("Authorization", "Bearer admin");
@@ -301,18 +301,18 @@ namespace Unnatural
                     var expected = options.Uwapi ? Interop.UwPlayerConnectionClassEnum.UwApi : Interop.UwPlayerConnectionClassEnum.Computer;
                     if (p.playerConnectionClass != expected)
                     {
-                        Interop.uwLog(Interop.UwSeverityEnum.Info, "kicking player - wrong type");
+                        Game.LogInfo("kicking player - wrong type");
                         Interop.uwAdminKickPlayer(id);
                         result = false;
                     }
                 }
 
                 // check allowed user id
-                if (p.steamUserId != myUserId && players.Count() > 0)
+                if (p.steamUserId != myUserId && players.Count > 0)
                 {
                     if (!players.Contains(p.steamUserId))
                     {
-                        Interop.uwLog(Interop.UwSeverityEnum.Info, "kicking player - wrong id");
+                        Game.LogInfo("kicking player - wrong id");
                         Interop.uwAdminKickPlayer(id);
                         result = false;
                     }
@@ -345,21 +345,21 @@ namespace Unnatural
                     Interop.uwAdminPlayerSetAdmin(id, true);
             }
 
-            // check forces count
-            if (forces.Count() > Map.MaxPlayers())
+            // check map is overcrowded
+            if (forces.Count > Map.MaxPlayers())
                 result = false;
 
-            // check all players present
-            if (players.Count() > 0)
+            // check map is filled
+            if (players.Count == 0 && (stopWatch.ElapsedMilliseconds < options.Timeout * 1000))
             {
-                if (!playerIds.SetEquals(players))
+                if (forces.Count < Map.MaxPlayers())
                     result = false;
             }
 
-            // check map is filled
-            if (players.Count() == 0)
+            // check all players present
+            if (players.Count > 0)
             {
-                if (forces.Count() < Map.MaxPlayers())
+                if (!playerIds.SetEquals(players))
                     result = false;
             }
 
@@ -378,8 +378,6 @@ namespace Unnatural
                     playerToTeam.Add(sid, team);
                     playerToForce.Add(sid, force);
                 }
-
-                // check and set teams
                 foreach (var ps in teams)
                 {
                     ulong primary = ps[0];
@@ -397,19 +395,17 @@ namespace Unnatural
                         }
                     }
                 }
+            }
 
-                { // update colors
-                    int i = 0;
-                    foreach (ulong p in players)
-                    {
-                        if (!playerToForce.ContainsKey(p))
-                            continue;
-                        float h = (float)i / (float)players.Count;
-                        float r, g, b;
-                        ColorConverter.HsvToRgb(h, 1, 1, out r, out g, out b);
-                        Interop.uwAdminForceSetColor(playerToForce[p], r, g, b);
-                        i++;
-                    }
+            { // colors
+                int i = 0;
+                foreach (uint force in forces)
+                {
+                    float h = (float)i / (float)forces.Count;
+                    float r, g, b;
+                    ColorConverter.HsvToRgb(h, 1, 1, out r, out g, out b);
+                    Interop.uwAdminForceSetColor(force, r, g, b);
+                    i++;
                 }
             }
 
@@ -428,7 +424,7 @@ namespace Unnatural
                     return;
                 }
             }
-            if (stopWatch.ElapsedMilliseconds > options.Timeout * 1000)
+            if (stopWatch.ElapsedMilliseconds > options.Timeout * 1000 + 5000)
             {
                 Game.LogError("session timeout reached");
                 throw new Exception("session timed out");
