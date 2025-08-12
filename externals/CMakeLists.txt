@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.31)
 
 file(GLOB uwapi-list "uwapi/csharp/uwapi/*.cs")
 add_library(uwapi SHARED ${uwapi-list})

@@ -29,7 +29,7 @@ namespace Unnatural
         [Option('d', "duration", Default = (uint)3600, Required = false, HelpText = "Max duration of the match (in-game seconds).")]
         public uint Duration { get; set; }
 
-        [Option('t', "timeout", Default = (uint)900, Required = false, HelpText = "Timeout to start the game (seconds).")]
+        [Option('t', "timeout", Default = (uint)300, Required = false, HelpText = "Timeout to start the game (seconds).")]
         public uint Timeout { get; set; }
 
         [Option('o', "observer", Default = true, Required = false, HelpText = "Start local observer.")]
@@ -77,10 +77,7 @@ namespace Unnatural
                 }
             }
             if (t.Count > 0)
-            {
                 teams.Add(t);
-                t = new List<ulong>();
-            }
 
             if (teams.Count > 1)
                 return teams;
@@ -170,65 +167,6 @@ namespace Unnatural
         readonly string publishLobbyBaseUrl;
         Task<HttpResponseMessage> publishLobbyTask;
 
-        long lastCameraUpdate = 0;
-        readonly Dictionary<uint, uint> forcesShootingPosition = new Dictionary<uint, uint>();
-        readonly Dictionary<uint, uint> forcesBuildingPosition = new Dictionary<uint, uint>();
-        int lastShootingForceIndex = 0;
-        int lastBuildingForceIndex = 0;
-
-        void Shooting(object sender, Interop.UwShootingData[] data)
-        {
-            foreach (var it in data)
-            {
-                forcesShootingPosition.Remove(it.shooter.force);
-                forcesShootingPosition.Add(it.shooter.force, it.shooter.position);
-            }
-        }
-
-        static bool IsNewBuilding(dynamic x)
-        {
-            if (!Entity.Has(x, "Unit"))
-                return false;
-            if (Entity.Has(x, "Visited"))
-                return false;
-            uint p = x.Proto.proto;
-            return Prototypes.Type(p) == Interop.UwPrototypeTypeEnum.Unit && Prototypes.Unit(p).buildingRadius > 0;
-        }
-
-        void Buildings()
-        {
-            foreach (var b in World.Entities().Values.Where(x => IsNewBuilding(x)))
-            {
-                uint o = b.Owner.force;
-                forcesBuildingPosition.Remove(o);
-                forcesBuildingPosition.Add(o, b.Position.position);
-                b.Visited = true;
-            }
-        }
-
-        void SuggestCamera()
-        {
-            var forces = World.Entities().Values.Where(x => Entity.Has(x, "Force") && (x.Force.state & Interop.UwForceStateFlags.Defeated) == 0).Select(x => (uint)x.Id).ToList();
-            if (forces.Count() == 0)
-                return;
-
-            // shooting
-            forcesShootingPosition.Keys.Where(key => !forces.Contains(key)).ToList().ForEach(key => forcesShootingPosition.Remove(key));
-            if (forcesShootingPosition.Count() > 0)
-            {
-                lastShootingForceIndex = (lastShootingForceIndex + 1) % forces.Count();
-                while (!forcesShootingPosition.ContainsKey(forces[lastShootingForceIndex]))
-                    lastShootingForceIndex = (lastShootingForceIndex + 1) % forces.Count();
-                Interop.uwSendCameraSuggestion(forcesShootingPosition[forces[lastShootingForceIndex]]);
-                forcesShootingPosition.Clear();
-                return;
-            }
-
-            // buildings
-            lastBuildingForceIndex = (lastBuildingForceIndex + 1) % forces.Count();
-            Interop.uwSendCameraSuggestion(forcesBuildingPosition[forces[lastBuildingForceIndex]]);
-        }
-
         string PickMap()
         {
             var mapsList = options.Maps.ToList();
@@ -240,6 +178,7 @@ namespace Unnatural
 
         void PublishLobby()
         {
+            Debug.Assert(publishLobbyBaseUrl.Length > 0);
             Interop.uwLog(Interop.UwSeverityEnum.Info, "publishing lobby id");
             string url = publishLobbyBaseUrl + "/api/publish_lobby";
             string ps = players.Count == 0 ? "[]" : "[\"" + string.Join("\",\"", players.Select(x => x.ToString())) + "\"]";
@@ -259,13 +198,15 @@ namespace Unnatural
                 case TaskStatus.Canceled:
                 case TaskStatus.Faulted:
                     Game.LogError("failed to publish lobby id");
-                    throw publishLobbyTask.Exception ?? new Exception("failed to publish lobby id");
+                    var ex = publishLobbyTask.Exception ?? new Exception("failed to publish lobby id");
+                    publishLobbyTask = null;
+                    throw ex;
                 case TaskStatus.RanToCompletion:
                     var response = publishLobbyTask.Result;
                     Game.LogInfo("received response from http server, code: " + response.StatusCode);
+                    publishLobbyTask = null;
                     if (!response.IsSuccessStatusCode)
                         throw new Exception("failed lobby task publish");
-                    publishLobbyTask = null;
                     return true;
                 default:
                     return false;
@@ -274,12 +215,14 @@ namespace Unnatural
 
         void Initialize()
         {
-            Interop.uwLog(Interop.UwSeverityEnum.Info, "initializing");
+            Game.LogInfo("initializing");
+            Game.SetPlayerName("match-admin");
             for (int i = 0; i < options.Bots; i++)
-                Interop.uwAdminAddAi();
+                Admin.AddAi();
             string map = PickMap();
-            Interop.uwLog(Interop.UwSeverityEnum.Info, "chosen map: " + map);
-            Interop.uwSendMapSelection(map);
+            Game.LogInfo("chosen map: " + map);
+            Admin.SetMapSelection(map);
+            Admin.SetAutomaticSuggestedCameraFocus(true);
             if (options.Announcement.Value)
                 PublishLobby();
         }
@@ -289,37 +232,37 @@ namespace Unnatural
             bool result = true;
             var forces = new HashSet<uint>();
             var playerIds = new HashSet<ulong>();
-            ulong myUserId = Interop.uwGetUserId();
+            ulong myUserId = Admin.GetUserId();
 
-            foreach (var player in World.Entities().Values.Where(x => Entity.Has(x, "Player")))
+            foreach (var player in World.Entities().Values.Where(x => x.Player.HasValue))
             {
                 uint id = player.Id;
-                Interop.UwPlayerComponent p = player.Player;
+                Interop.UwPlayerComponent p = player.Player.Value;
 
-                // check player type
+                // check player connection class
                 if (p.steamUserId != myUserId && p.force != Invalid)
                 {
                     var expected = options.Uwapi ? Interop.UwPlayerConnectionClassEnum.UwApi : Interop.UwPlayerConnectionClassEnum.Computer;
                     if (p.playerConnectionClass != expected)
                     {
-                        Game.LogInfo("kicking player - wrong type");
-                        Interop.uwAdminKickPlayer(id);
+                        Game.LogInfo("kicking player - forbidden connection class");
+                        Admin.KickPlayer(id);
                         result = false;
                     }
                 }
 
-                // check allowed user id
+                // check permitted steam user id
                 if (p.steamUserId != myUserId && players.Count > 0)
                 {
                     if (!players.Contains(p.steamUserId))
                     {
-                        Game.LogInfo("kicking player - wrong id");
-                        Interop.uwAdminKickPlayer(id);
+                        Game.LogInfo("kicking player - forbidden steam user id");
+                        Admin.KickPlayer(id);
                         result = false;
                     }
                 }
 
-                // check duplicate user id
+                // check duplicate steam user id
                 if (p.steamUserId != myUserId && p.force != Invalid)
                 {
                     if (playerIds.Contains(p.steamUserId))
@@ -341,9 +284,9 @@ namespace Unnatural
                 if ((p.state & Interop.UwPlayerStateFlags.Loaded) == 0)
                     result = false;
 
-                // check match observer
+                // check match observer is admin
                 if (p.steamUserId == myUserId && p.playerConnectionClass == Interop.UwPlayerConnectionClassEnum.Computer && (p.state & Interop.UwPlayerStateFlags.Admin) == 0)
-                    Interop.uwAdminPlayerSetAdmin(id, true);
+                    Admin.PlayerSetAdmin(id, true);
             }
 
             // check map is overcrowded
@@ -369,13 +312,13 @@ namespace Unnatural
             {
                 var playerToTeam = new Dictionary<ulong, uint>();
                 var playerToForce = new Dictionary<ulong, uint>();
-                foreach (var player in World.Entities().Values.Where(x => Entity.Has(x, "Player")))
+                foreach (var player in World.Entities().Values.Where(x => x.Player.HasValue))
                 {
-                    ulong sid = player.Player.steamUserId;
-                    uint force = player.Player.force;
+                    ulong sid = player.Player.Value.steamUserId;
+                    uint force = player.Player.Value.force;
                     if (force == 0 || force == Invalid)
                         continue;
-                    uint team = World.Entity(force).Force.team;
+                    uint team = World.Entity(force).Force.Value.intendedTeam;
                     playerToTeam.Add(sid, team);
                     playerToForce.Add(sid, force);
                 }
@@ -392,7 +335,7 @@ namespace Unnatural
                         if (playerToTeam[p] != t)
                         {
                             result = false;
-                            Interop.uwAdminForceJoinTeam(playerToForce[p], t);
+                            Admin.ForceJoinTeam(playerToForce[p], t);
                         }
                     }
                 }
@@ -405,7 +348,7 @@ namespace Unnatural
                     float h = (float)i / (float)forces.Count;
                     float r, g, b;
                     ColorConverter.HsvToRgb(h, 1, 1, out r, out g, out b);
-                    Interop.uwAdminForceSetColor(force, r, g, b);
+                    Admin.ForceSetColor(force, r, g, b);
                     i++;
                 }
             }
@@ -415,15 +358,10 @@ namespace Unnatural
 
         void UpdateSession()
         {
+            if (!World.IsAdmin())
             {
-                var mp = new Interop.UwMyPlayer();
-                if (!Interop.uwMyPlayer(ref mp))
-                    return;
-                if (!mp.admin)
-                {
-                    Game.LogWarning("not admin (yet)");
-                    return;
-                }
+                Game.LogWarning("not admin (yet)");
+                return;
             }
             if (stopWatch.ElapsedMilliseconds > options.Timeout * 1000 + 5000)
             {
@@ -441,8 +379,8 @@ namespace Unnatural
             {
                 if (startCountdown++ > Interop.UW_GameTicksPerSecond)
                 {
-                    Interop.uwLog(Interop.UwSeverityEnum.Info, "starting game");
-                    Interop.uwAdminStartGame();
+                    Game.LogInfo("starting game");
+                    Admin.StartGame();
                     startCountdown = 0;
                 }
             }
@@ -452,47 +390,33 @@ namespace Unnatural
 
         void UpdateGame()
         {
-            if (Game.Tick() > options.Duration * Interop.UW_GameTicksPerSecond)
+            if (Game.GameTick() > options.Duration * Interop.UW_GameTicksPerSecond)
             {
                 Game.LogError("game max duration reached");
-                Interop.uwAdminTerminateGame();
-                return;
-            }
-
-            Buildings();
-            long current = stopWatch.ElapsedMilliseconds;
-            if (current > lastCameraUpdate + 5000)
-            {
-                lastCameraUpdate = current;
-                SuggestCamera();
+                Admin.TerminateGame();
             }
         }
 
         void Updating(object sender, bool stepping)
         {
-            if (Game.GameState() == Interop.UwGameStateEnum.Session)
+            switch (Game.GameState())
             {
-                UpdateSession();
-                return;
-            }
-            if (Game.GameState() == Interop.UwGameStateEnum.Game)
-            {
-                if (stepping)
+                case Interop.UwGameStateEnum.Session:
+                    UpdateSession();
+                    break;
+                case Interop.UwGameStateEnum.Game:
                     UpdateGame();
-                return;
+                    break;
             }
         }
 
         void Start()
         {
             stopWatch.Start();
-            Game.SetPlayerName("match-admin");
-            Game.SetPlayerColor(0, 0, 0);
-            Interop.uwSetConnectAsObserver(true);
-            Game.SetStartGui(options.Observer.Value, "--observer 2 --name match-observer");
-            Interop.uwLog(Interop.UwSeverityEnum.Info, "starting");
+            Game.SetConnectStartGui(options.Observer.Value, "--observer 2 --name match-observer");
+            Game.LogInfo("starting");
             Game.ConnectNewServer(options.Visibility, options.Name, "--allowUwApiAdmin 1");
-            Interop.uwLog(Interop.UwSeverityEnum.Info, "done");
+            Game.LogInfo("done");
         }
 
         MatchAdmin(Options options_, string publishLobbyBaseUrl_)
@@ -501,42 +425,30 @@ namespace Unnatural
             players = options_.ExtractPlayers();
             teams = options_.ExtractTeams();
             publishLobbyBaseUrl = publishLobbyBaseUrl_;
-            Game.Updating += Updating;
-            Game.Shooting += Shooting;
+            Events.Updating += Updating;
         }
 
         static int Main(string[] args)
         {
-            string root = Environment.GetEnvironmentVariable("UNNATURAL_ROOT");
-            if (root == null)
-            {
-                Console.Error.WriteLine("Environment variable UNNATURAL_ROOT must be set.");
-                Console.Error.WriteLine("Eg. <steam path>/steamapps/common/Unnatural Worlds/bin.");
-                return 1;
-            }
-            System.IO.Directory.SetCurrentDirectory(root);
-
-            string publishLobbyBaseUrl = Environment.GetEnvironmentVariable("UNNATURAL_URL");
-            if (publishLobbyBaseUrl == null)
-            {
-                Console.Error.WriteLine("Environment variable UNNATURAL_URL must be set.");
-                return 1;
-            }
+            LibraryHelpers.SetCurrentDirectory();
 
             var options = Parser.Default.ParseArguments<Options>(args);
             if (options.Tag == ParserResultType.NotParsed)
             {
                 Console.Error.WriteLine("Failed parsing options.");
-                return 2;
+                return 1;
             }
 
-            /*
-            { // debug print of parsed teams
-                var teams = options.Value.ExtractTeams();
-                Console.WriteLine(string.Join(" | ", teams.Select(team => string.Join(" ", team))));
-                return 0;
+            string publishLobbyBaseUrl = "";
+            if (options.Value.Announcement.Value)
+            {
+                publishLobbyBaseUrl = Environment.GetEnvironmentVariable("UNNATURAL_URL"); ;
+                if (publishLobbyBaseUrl == null)
+                {
+                    Console.Error.WriteLine("Environment variable UNNATURAL_URL must be set.");
+                    return 2;
+                }
             }
-            */
 
             MatchAdmin admin = new MatchAdmin(options.Value, publishLobbyBaseUrl);
             admin.Start();

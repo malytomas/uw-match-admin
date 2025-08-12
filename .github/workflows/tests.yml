@@ -3,14 +3,13 @@ on: [push, pull_request]
 
 jobs:
   Windows:
-    name: windows-${{ matrix.os-version }}-${{ matrix.build-config }}-${{ matrix.build-arch }}
+    name: windows-${{ matrix.os-version }}-${{ matrix.build-config }}
     runs-on: windows-${{ matrix.os-version }}
     strategy:
       fail-fast: false
       matrix:
-        os-version: [2022]
+        os-version: [2025]
         build-config: [debug,release]
-        build-arch: [x64]
 
     steps:
     - name: Versions
@@ -28,7 +27,7 @@ jobs:
       run: |
         mkdir build
         cd build
-        cmake -A${{ matrix.build-arch }} ..
+        cmake ..
 
     - name: Build
       shell: bash
