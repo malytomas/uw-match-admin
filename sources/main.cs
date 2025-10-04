@@ -252,7 +252,7 @@ namespace Unnatural
                 }
 
                 // check permitted steam user id
-                if (p.steamUserId != myUserId && players.Count > 0)
+                if (p.steamUserId != myUserId && players.Count > 0 && p.force != Invalid)
                 {
                     if (!players.Contains(p.steamUserId))
                     {

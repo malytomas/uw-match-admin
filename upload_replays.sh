@@ -14,7 +14,7 @@ if [ -z "$UNNATURAL_TOURNAMENT" ]; then
 fi
 
 while true; do
-    find "$UNNATURAL_ROOT/replays" -type f -name '*.uwreplay' ! -name '*_uploaded.uwreplay' | while read -r file; do
+    find "$UNNATURAL_ROOT/../replays" -type f -name '*.uwreplay' ! -name '*_uploaded.uwreplay' | while read -r file; do
 		echo "uploading $file"
         response=$(curl -L -H "Authorization: Bearer admin" -s -o /dev/null -w "%{http_code}" -F "file=@$file" "$UNNATURAL_URL/api/upload_replay?tournament_name=$UNNATURAL_TOURNAMENT")
         if [ "$response" -ge 200 ] && [ "$response" -lt 300 ]; then
